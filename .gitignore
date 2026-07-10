@@ -1,3 +1,4 @@
 output
 *.t.*
+data
 __pycache__
