@@ -2,3 +2,5 @@ output
 *.t.*
 data
 __pycache__
+.env
+.vscode
