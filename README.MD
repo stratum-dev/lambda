@@ -60,7 +60,7 @@ Each knowledge entry is tagged with its `subset` in ChromaDB metadata, so differ
 
 ```bash
 python detect.py --subset       js-to-cpp   \
-                 --language     javascript  \
+                 --language     cpp         \
                  [--start N]                \
                  [--limit N]                \
                  [--workers N]
