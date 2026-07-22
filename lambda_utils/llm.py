@@ -6,7 +6,7 @@ import json
 import re
 import time
 
-from utils.config import get_llm_client, MODEL, MAX_RETRIES, RETRY_DELAY
+from lambda_utils.config import get_llm_client, MODEL, MAX_RETRIES, RETRY_DELAY
 
 
 def call_llm(

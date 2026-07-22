@@ -11,14 +11,16 @@ After processing, computes F1, MCC, Recall, and Precision against the ground-
 truth labels.
 
 Usage:
-  python detect.py [--subset NAME] [--start N] [--limit N] [--workers N]
+  python detect.py [--subset NAME] [--language LANG] [--start N] [--limit N] [--workers N]
 
 Flags:
-  --subset NAME  Dataset subset/config to load (default: js-to-cpp).
-                 Available: cpp-only, java-to-cpp, js-to-cpp, debug.
-  --start N      Start processing at row index N (0-based, for resumption).
-  --limit N      Stop after processing N samples.
-  --workers N    Max parallel LLM requests (default: LLM_MAX_WORKERS env or 4).
+  --subset NAME   Dataset subset/config to load (default: js-to-cpp).
+                  Available: cpp-only, java-to-cpp, js-to-cpp, debug.
+  --language LANG  Programming language for CPG generation (default: javascript).
+                  Supported: javascript, cpp, java, python.
+  --start N       Start processing at row index N (0-based, for resumption).
+  --limit N       Stop after processing N samples.
+  --workers N     Max parallel LLM requests (default: LLM_MAX_WORKERS env or 4).
 """
 
 import argparse
@@ -33,23 +35,23 @@ import pandas as pd
 from datasets import load_dataset
 from dotenv import load_dotenv
 
-from utils.config import (
+from lambda_utils.config import (
     HF_DATASET_REPO,
     HF_DATASET_SUBSET_DEFAULT,
     COLLECTION_NAME,
     LLM_MAX_WORKERS,
     TOP_K,
 )
-from utils.cpg import generate_cpg_json
-from utils.embeddings import get_embedding_model
-from utils.llm import call_llm_with_retry, extract_json
-from utils.metrics import compute_metrics
-from utils.progress import ProgressTracker
-from utils.prompts import (
+from lambda_utils.cpg import generate_cpg_json
+from lambda_utils.embeddings import get_embedding_model
+from lambda_utils.llm import call_llm_with_retry, extract_json
+from lambda_utils.metrics import compute_metrics
+from lambda_utils.progress import ProgressTracker
+from lambda_utils.prompts import (
     load_prompt_messages,
     render_messages,
 )
-from utils.vectordb import require_collection
+from lambda_utils.vectordb import require_collection
 
 load_dotenv()
 
@@ -72,6 +74,7 @@ def _process_one(
     idx: int,
     row,
     subset: str,
+    language: str,
     extract_messages: list[dict],
     detect_messages: list[dict],
     embedding_model,
@@ -88,7 +91,7 @@ def _process_one(
     true_label = bool(row["label"])
 
     # --- Step 1: Generate CPG -------------------------------------------------
-    cpg_json_str = generate_cpg_json(source_code)
+    cpg_json_str = generate_cpg_json(source_code, language=language)
 
     # --- Step 2: Extract taint-chain descriptions via LLM ----------------------
     msgs_extract = render_messages(extract_messages, cpg=cpg_json_str)
@@ -168,6 +171,12 @@ def main() -> None:
         type=str,
         default=HF_DATASET_SUBSET_DEFAULT,
         help=f"Dataset subset/config to load (default: {HF_DATASET_SUBSET_DEFAULT})",
+    )
+    parser.add_argument(
+        "--language",
+        type=str,
+        default="javascript",
+        help="Programming language for CPG generation (default: javascript)",
     )
     parser.add_argument(
         "--start", type=int, default=0, help="Start processing at row index (0-based)"
@@ -251,6 +260,7 @@ def main() -> None:
                     idx,
                     df.iloc[idx],
                     args.subset,
+                    args.language,
                     extract_messages,
                     detect_messages,
                     embedding_model,

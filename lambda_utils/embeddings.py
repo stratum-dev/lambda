@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from sentence_transformers import SentenceTransformer
 
-from utils.config import EMBEDDING_MODEL_NAME
+from lambda_utils.config import EMBEDDING_MODEL_NAME
 
 _embedding_model: SentenceTransformer | None = None
 

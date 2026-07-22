@@ -7,15 +7,17 @@ with taint-analysis prompts to obtain structured knowledge, encodes the retrieva
 description into a vector, and stores the result in ChromaDB.
 
 Usage:
-  python build.py [--subset NAME] [--reset-db] [--start N] [--limit N] [--workers N]
+  python build.py [--subset NAME] [--language LANG] [--reset-db] [--start N] [--limit N] [--workers N]
 
 Flags:
-  --subset NAME  Dataset subset/config to load (default: js-to-cpp).
-                 Available: cpp-only, java-to-cpp, js-to-cpp, debug.
-  --reset-db     Drop and re-create the ChromaDB collection before starting.
-  --start N      Start processing at row index N (0-based, for resumption).
-  --limit N      Stop after processing N samples.
-  --workers N    Max parallel LLM requests (default: LLM_MAX_WORKERS env or 4).
+  --subset NAME   Dataset subset/config to load (default: js-to-cpp).
+                  Available: cpp-only, java-to-cpp, js-to-cpp, debug.
+  --language LANG  Programming language for CPG generation (default: javascript).
+                  Supported: javascript, cpp, java, python.
+  --reset-db      Drop and re-create the ChromaDB collection before starting.
+  --start N       Start processing at row index N (0-based, for resumption).
+  --limit N       Stop after processing N samples.
+  --workers N     Max parallel LLM requests (default: LLM_MAX_WORKERS env or 4).
 """
 
 import argparse
@@ -29,21 +31,21 @@ import pandas as pd
 from datasets import load_dataset
 from dotenv import load_dotenv
 
-from utils.config import (
+from lambda_utils.config import (
     HF_DATASET_REPO,
     HF_DATASET_SUBSET_DEFAULT,
     COLLECTION_NAME,
     LLM_MAX_WORKERS,
 )
-from utils.cpg import generate_cpg_json
-from utils.embeddings import get_embedding_model
-from utils.llm import call_llm_with_retry, extract_json
-from utils.progress import ProgressTracker
-from utils.prompts import (
+from lambda_utils.cpg import generate_cpg_json
+from lambda_utils.embeddings import get_embedding_model
+from lambda_utils.llm import call_llm_with_retry, extract_json
+from lambda_utils.progress import ProgressTracker
+from lambda_utils.prompts import (
     load_prompt_messages,
     render_messages,
 )
-from utils.vectordb import get_collection
+from lambda_utils.vectordb import get_collection
 
 load_dotenv()
 
@@ -64,6 +66,7 @@ def _process_one(
     idx: int,
     row,
     subset: str,
+    language: str,
     base_messages: list[dict],
     embedding_model,
     collection,
@@ -82,7 +85,7 @@ def _process_one(
     context = str(row["context"])
 
     # Step 1: Generate CPG
-    cpg_json_str = generate_cpg_json(source_code)
+    cpg_json_str = generate_cpg_json(source_code, language=language)
 
     # Step 2: Build messages + call LLM
     messages = render_messages(
@@ -134,6 +137,12 @@ def main() -> None:
         type=str,
         default=HF_DATASET_SUBSET_DEFAULT,
         help=f"Dataset subset/config to load (default: {HF_DATASET_SUBSET_DEFAULT})",
+    )
+    parser.add_argument(
+        "--language",
+        type=str,
+        default="javascript",
+        help="Programming language for CPG generation (default: javascript)",
     )
     parser.add_argument(
         "--reset-db",
@@ -207,6 +216,7 @@ def main() -> None:
                 idx,
                 df.iloc[idx],
                 args.subset,
+                args.language,
                 base_messages,
                 embedding_model,
                 collection,
