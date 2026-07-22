@@ -6,7 +6,7 @@ import json
 import re
 import time
 
-from lambda_utils.config import get_llm_client, MODEL, MAX_RETRIES, RETRY_DELAY
+from lambda_utils.config import get_llm_client, MODEL, RETRY_DELAY
 
 
 def call_llm(
@@ -45,15 +45,13 @@ def call_llm_with_retry(
     temperature: float = 0.0,
     use_json_format: bool = True,
 ) -> str:
-    """Call the LLM with retries on failure or empty response.
+    """Call the LLM, retrying indefinitely until success.
 
-    Uses ``MAX_RETRIES`` attempts with ``RETRY_DELAY`` seconds backoff.
-    Raises ``ValueError`` on empty response, or the last exception after
-    exhausting retries.
+    Keeps retrying on any failure (network error, empty response, etc.) with
+    ``RETRY_DELAY`` seconds backoff between attempts.  Only returns a valid
+    non-empty response — never gives up.
     """
-    last_error: Exception | None = None
-
-    for attempt in range(1, MAX_RETRIES + 1):
+    while True:
         try:
             response_text = call_llm(
                 messages,
@@ -64,12 +62,8 @@ def call_llm_with_retry(
             if not response_text or not response_text.strip():
                 raise ValueError("LLM returned empty response")
             return response_text
-        except Exception as exc:
-            last_error = exc
-            if attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY)
-
-    raise last_error  # type: ignore[misc]
+        except Exception:
+            time.sleep(RETRY_DELAY)
 
 
 def extract_json(text: str) -> dict:

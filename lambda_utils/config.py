@@ -40,8 +40,7 @@ PROMPT_DIR = Path("./prompts")
 COLLECTION_NAME = "taint_knowledge"
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
-MAX_RETRIES = 3
-RETRY_DELAY = 2  # seconds
+RETRY_DELAY = 2  # seconds (backoff between LLM retries)
 TOP_K = 3  # RAG retrieval: top-K per query
 LLM_MAX_WORKERS = int(os.getenv("LLM_MAX_WORKERS", "4"))
 
