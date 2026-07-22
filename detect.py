@@ -10,34 +10,35 @@ After processing, computes F1, MCC, Recall, and Precision against the ground-
 truth labels.
 
 Usage:
-  python detect.py [--mini] [--start N] [--limit N]
+  python detect.py [--mini] [--start N] [--limit N] [--workers N]
 
 Flags:
   --mini      Use inference.mini.parquet (debug subset) instead of the full dataset.
   --start N   Start processing at row index N (0-based, for resumption).
   --limit N   Stop after processing N samples.
+  --workers N Max parallel LLM requests (default: LLM_MAX_WORKERS env or 4).
 """
 
 import argparse
 import json
 import sys
+import threading
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import pandas as pd
 from dotenv import load_dotenv
 
-from utils.config import DATA_DIR, COLLECTION_NAME, TOP_K
+from utils.config import DATA_DIR, COLLECTION_NAME, LLM_MAX_WORKERS, TOP_K
 from utils.cpg import generate_cpg_json
 from utils.embeddings import get_embedding_model
 from utils.llm import call_llm_with_retry, extract_json
 from utils.metrics import compute_metrics
 from utils.progress import ProgressTracker
 from utils.prompts import (
-    PH_CPG,
-    PH_KNOWLEDGE,
-    inject_placeholders,
     load_prompt_messages,
+    render_messages,
 )
 from utils.vectordb import require_collection
 
@@ -49,8 +50,97 @@ load_dotenv()
 
 PROMPT_EXTRACT_DIR = Path("./prompts/extract-all-taint-chains")
 PROMPT_DETECT_DIR = Path("./prompts/detect")
-PROGRESS_FILE = Path("./detect_progress.json")
-RESULTS_FILE = Path("./detect_results.jsonl")
+PROGRESS_FILE = Path("./detect_progress.t.json")
+RESULTS_FILE = Path("./detect_results.t.jsonl")
+
+
+# ---------------------------------------------------------------------------
+# Per-sample worker
+# ---------------------------------------------------------------------------
+
+
+def _process_one(
+    idx: int,
+    row,
+    extract_messages: list[dict],
+    detect_messages: list[dict],
+    embedding_model,
+    collection,
+    lock: threading.Lock,
+    results_fp,
+) -> dict:
+    """Process a single sample — CPG → extract-LLM → RAG → detect-LLM.
+
+    Returns a result record dict on success.  Raises on failure.
+    """
+    row_id = int(row.get("id", idx))
+    source_code = str(row["source"])
+    true_label = bool(row["label"])
+
+    # --- Step 1: Generate CPG -------------------------------------------------
+    cpg_json_str = generate_cpg_json(source_code)
+
+    # --- Step 2: Extract taint-chain descriptions via LLM ----------------------
+    msgs_extract = render_messages(extract_messages, cpg=cpg_json_str)
+    response_text = call_llm_with_retry(msgs_extract)
+    extract_output = extract_json(response_text)
+    descriptions: list[str] = extract_output.get("descriptions", [])
+
+    # --- Step 3: Encode → query ChromaDB ------------------------------------
+    if not descriptions:
+        all_knowledges: list[str] = []
+    else:
+        query_embeddings = embedding_model.encode(descriptions)
+
+        all_knowledges = []
+        seen: set[str] = set()
+        for emb in query_embeddings:
+            with lock:
+                results = collection.query(
+                    query_embeddings=[emb.tolist()],
+                    n_results=TOP_K,
+                )
+            docs = results.get("documents", [[]])[0]
+            for doc in docs:
+                if doc and doc not in seen:
+                    seen.add(doc)
+                    all_knowledges.append(doc)
+
+    # --- Step 4: Detect vulnerability via LLM --------------------------------
+    knowledge_text = (
+        "\n\n---\n\n".join(all_knowledges)
+        if all_knowledges
+        else "（未检索到相关漏洞知识）"
+    )
+
+    msgs_detect = render_messages(
+        detect_messages,
+        cpg=cpg_json_str,
+        knowledge=knowledge_text,
+    )
+    response_text = call_llm_with_retry(msgs_detect)
+    detect_output = extract_json(response_text)
+    pred_vulnerable = bool(detect_output.get("vulnerable", False))
+    inference = detect_output.get("inference", "")
+
+    # --- Step 5: Build result record -----------------------------------------
+    record = {
+        "index": idx,
+        "id": row_id,
+        "source": source_code,
+        "label": true_label,
+        "vulnerable": pred_vulnerable,
+        "inference": inference,
+        "descriptions_extracted": descriptions,
+        "knowledges_retrieved": all_knowledges,
+    }
+
+    # --- Step 6: Write result (serialised) -----------------------------------
+    with lock:
+        results_fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+        results_fp.flush()
+
+    return record
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +159,12 @@ def main() -> None:
         "--start", type=int, default=0, help="Start processing at row index (0-based)"
     )
     parser.add_argument("--limit", type=int, default=None, help="Stop after N samples")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=LLM_MAX_WORKERS,
+        help=f"Max parallel LLM requests (default: {LLM_MAX_WORKERS})",
+    )
     args = parser.parse_args()
 
     # --- Load dataset ----------------------------------------------------------
@@ -81,6 +177,7 @@ def main() -> None:
     df = pd.read_parquet(parquet_path)
     print(f"Loaded {len(df)} samples from {parquet_path}")
     print(f"Label distribution:\n{df['label'].value_counts().to_string()}")
+    print(f"Max workers: {args.workers}")
 
     # --- Infrastructure --------------------------------------------------------
     collection = require_collection(name=COLLECTION_NAME)
@@ -88,7 +185,7 @@ def main() -> None:
 
     embedding_model = get_embedding_model()
 
-    # --- Prompt templates (load once) ------------------------------------------
+    # --- Prompt templates (load once — read-only, share across threads) --------
     extract_messages = load_prompt_messages(PROMPT_EXTRACT_DIR)
     detect_messages = load_prompt_messages(PROMPT_DETECT_DIR)
 
@@ -111,135 +208,71 @@ def main() -> None:
                     y_pred_all.append(rec["vulnerable"])
         print(f"Restored {len(y_true_all)} previous results")
 
-    # --- Process samples -------------------------------------------------------
+    # --- Gather pending indices -------------------------------------------------
     start_idx = max(args.start, 0)
     end_idx = len(df) if args.limit is None else min(start_idx + args.limit, len(df))
+    pending = [i for i in range(start_idx, end_idx) if i not in processed]
 
-    total_processed = 0
-    total_errors = 0
+    if not pending:
+        print("All samples already processed — nothing to do.")
+        return
 
+    print(f"Processing {len(pending)} samples with {args.workers} workers ...")
+
+    # --- Shared state -----------------------------------------------------------
+    lock = threading.Lock()
+    counters: dict = {"done": 0, "errors": 0}
     results_fp = open(RESULTS_FILE, "a", encoding="utf-8")
 
     try:
-        for idx in range(start_idx, end_idx):
-            if idx in processed:
-                continue
-
-            row = df.iloc[idx]
-            row_id = int(row.get("id", idx))
-            source_code = str(row["source"])
-            true_label = bool(row["label"])
-
-            print(f"\n--- Sample {idx} (id={row_id}, label={true_label}) ---")
-
-            try:
-                # ----------------------------------------------------------------
-                # Step 1: Generate CPG
-                # ----------------------------------------------------------------
-                print("  Generating CPG...")
-                cpg_json_str = generate_cpg_json(source_code)
-                print(f"  CPG size: {len(cpg_json_str)} chars")
-
-                # ----------------------------------------------------------------
-                # Step 2: Extract taint-chain descriptions via LLM
-                # ----------------------------------------------------------------
-                msgs_extract = inject_placeholders(
-                    extract_messages, **{PH_CPG: cpg_json_str}
-                )
-
-                print("  Extract LLM...")
-                response_text = call_llm_with_retry(msgs_extract)
-                extract_output = extract_json(response_text)
-                descriptions: list[str] = extract_output.get("descriptions", [])
-                print(f"  Descriptions extracted: {len(descriptions)}")
-
-                # ----------------------------------------------------------------
-                # Step 3: Encode descriptions → query ChromaDB
-                # ----------------------------------------------------------------
-                if not descriptions:
-                    print(
-                        "  WARNING: No descriptions extracted, skipping RAG retrieval"
-                    )
-                    all_knowledges: list[str] = []
-                else:
-                    query_embeddings = embedding_model.encode(descriptions)
-                    print(
-                        f"  Encoded {len(descriptions)} descriptions "
-                        f"(shape: {query_embeddings.shape})"
-                    )
-
-                    all_knowledges = []
-                    seen: set[str] = set()
-                    for emb in query_embeddings:
-                        results = collection.query(
-                            query_embeddings=[emb.tolist()],
-                            n_results=TOP_K,
-                        )
-                        docs = results.get("documents", [[]])[0]
-                        for doc in docs:
-                            if doc and doc not in seen:
-                                seen.add(doc)
-                                all_knowledges.append(doc)
-                    print(
-                        f"  Retrieved {len(all_knowledges)} unique knowledge entries "
-                        f"(from {len(descriptions)} queries x top-{TOP_K})"
-                    )
-
-                # ----------------------------------------------------------------
-                # Step 4: Detect vulnerability via LLM
-                # ----------------------------------------------------------------
-                knowledge_text = (
-                    "\n\n---\n\n".join(all_knowledges)
-                    if all_knowledges
-                    else "（未检索到相关漏洞知识）"
-                )
-
-                msgs_detect = inject_placeholders(
+        # --- Parallel execution -------------------------------------------------
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            future_to_idx = {}
+            for idx in pending:
+                future = executor.submit(
+                    _process_one,
+                    idx,
+                    df.iloc[idx],
+                    extract_messages,
                     detect_messages,
-                    **{PH_CPG: cpg_json_str, PH_KNOWLEDGE: knowledge_text},
+                    embedding_model,
+                    collection,
+                    lock,
+                    results_fp,
                 )
+                future_to_idx[future] = idx
 
-                print("  Detect LLM...")
-                response_text = call_llm_with_retry(msgs_detect)
-                detect_output = extract_json(response_text)
-                pred_vulnerable = bool(detect_output.get("vulnerable", False))
-                inference = detect_output.get("inference", "")
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                row = df.iloc[idx]
+                true_label = bool(row["label"])
 
-                status = "CORRECT" if pred_vulnerable == true_label else "WRONG"
-                print(
-                    f"  Prediction: vulnerable={pred_vulnerable} "
-                    f"(true={true_label}) -> {status}"
-                )
+                try:
+                    record = future.result()
+                    status = (
+                        "CORRECT" if record["vulnerable"] == true_label else "WRONG"
+                    )
 
-                # ----------------------------------------------------------------
-                # Step 5: Record result
-                # ----------------------------------------------------------------
-                result_record = {
-                    "index": idx,
-                    "id": row_id,
-                    "source": source_code,
-                    "label": true_label,
-                    "vulnerable": pred_vulnerable,
-                    "inference": inference,
-                    "descriptions_extracted": descriptions,
-                    "knowledges_retrieved": all_knowledges,
-                }
-                results_fp.write(json.dumps(result_record, ensure_ascii=False) + "\n")
-                results_fp.flush()
+                    with lock:
+                        processed.add(idx)
+                        y_true_all.append(record["label"])
+                        y_pred_all.append(record["vulnerable"])
+                        counters["done"] += 1
+                        if counters["done"] % 5 == 0:
+                            progress.save(processed)
 
-                y_true_all.append(true_label)
-                y_pred_all.append(pred_vulnerable)
-
-                processed.add(idx)
-                total_processed += 1
-
-                if total_processed % 5 == 0:
-                    progress.save(processed)
-
-            except Exception as e:
-                total_errors += 1
-                print(f"  ERROR on sample {idx}: {e}")
-                traceback.print_exc()
+                    print(
+                        f"[{counters['done']}/{len(pending)}] "
+                        f"Sample {idx} (id={record['id']}, label={true_label}) "
+                        f"-> vulnerable={record['vulnerable']} {status} "
+                        f"({len(record['descriptions_extracted'])} descriptions, "
+                        f"{len(record['knowledges_retrieved'])} knowledges)"
+                    )
+                except Exception:
+                    with lock:
+                        counters["errors"] += 1
+                    print(f"[{counters['done']}/{len(pending)}] " f"Sample {idx} ERROR")
+                    traceback.print_exc()
 
     finally:
         results_fp.close()
@@ -249,7 +282,7 @@ def main() -> None:
 
     # --- Metrics ---------------------------------------------------------------
     print(f"\n{'=' * 60}")
-    print(f"Processed {total_processed} new samples ({total_errors} errors)")
+    print(f"Processed {counters['done']} new samples ({counters['errors']} errors)")
 
     if y_true_all:
         metrics = compute_metrics(y_true_all, y_pred_all)

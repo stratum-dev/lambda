@@ -42,7 +42,7 @@ EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 MAX_RETRIES = 3
 RETRY_DELAY = 2  # seconds
 TOP_K = 3  # RAG retrieval: top-K per query
-EMBEDDING_DIM = 384  # all-MiniLM-L6-v2 output dimension
+LLM_MAX_WORKERS = int(os.getenv("LLM_MAX_WORKERS", "4"))
 
 # ---------------------------------------------------------------------------
 # Lazy singletons
