@@ -37,11 +37,11 @@ The dataset is loaded directly from HuggingFace. Use `--subset` to choose a data
 ### Build the knowledge base
 
 ```bash
-python build.py --subset js-to-cpp   \
-                [--language LANG]    \
-                [--reset-db]         \
-                [--start N]          \
-                [--limit N]          \
+python build.py --subset          js-to-cpp   \
+                --language        javascript  \
+                [--reset-db]                  \
+                [--start N]                   \
+                [--limit N]                   \
                 [--workers N]
 ```
 
@@ -59,10 +59,10 @@ Each knowledge entry is tagged with its `subset` in ChromaDB metadata, so differ
 ### Run vulnerability detection
 
 ```bash
-python detect.py --subset js-to-cpp   \
-                 [--language LANG]    \
-                 [--start N]          \
-                 [--limit N]          \
+python detect.py --subset       js-to-cpp   \
+                 --language     javascript  \
+                 [--start N]                \
+                 [--limit N]                \
                  [--workers N]
 ```
 
@@ -75,6 +75,22 @@ Description of flags:
 + `--workers N` Max parallel LLM requests (default: `LLM_MAX_WORKERS` env or 4).
 
 Retrieval automatically filters ChromaDB by `where={"subset": subset}`, so only knowledge from the matching subset is used for RAG.
+
+## Related Works
+
+This work also used the following projects for secondary development. According to their open-source licenses, they will be described below.
+
+### CodeViews & Comex
+
+[Paper (ASE2023)](https://dl.acm.org/doi/10.1109/ASE56229.2023.00010) | [Project Repository](https://github.com/IBM/tree-sitter-codeviews)
+
+The CodeViews & Comex is a tree-sitter based tools to generate combined multi-code view graphs that can be used with various types of machine learning models (sequence models, graph neural networks, etc), released by IBM, authored by *Das, Debeshee and Mathews, Noble Saji and Mathai, Alex and Tamilselvam, Srikanth and Sedamaki, Kranthi and Chimalakonda, Sridhar and Kumar, Atul*.
+
+### Atlas
+
+[Paper (ArXiv)](https://arxiv.org/abs/2512.12507) | [Project Repository](https://github.com/jaid-monwar/ATLAS-multi-view-code-representation-tool) | [Presentation](https://www.youtube.com/watch?v=50DvEbenp14&feature=youtu.be)
+
+The Atlas is the extended version of Comex. It's a command-line tool that takes one or more C or C++ source files and emits an AST, a source-level inter-procedural CFG, a reaching-definition DFG, or any combination. Authored by *Jaid Monwar Chowdhury, Ahmad Farhan Shahriar Chowdhury, Humayra Binte Monwar, Mahmuda Naznin*
 
 ## License
 
