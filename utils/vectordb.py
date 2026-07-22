@@ -6,7 +6,7 @@ import sys
 
 import chromadb
 
-from framework.config import get_chroma_client, COLLECTION_NAME
+from utils.config import get_chroma_client, COLLECTION_NAME
 
 
 def get_collection(

@@ -23,18 +23,18 @@ from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
 
-from framework.config import DATA_DIR, COLLECTION_NAME
-from framework.cpg import generate_cpg_json
-from framework.embeddings import get_embedding_model
-from framework.llm import call_llm_with_retry, extract_json
-from framework.progress import ProgressTracker
-from framework.prompts import (
+from utils.config import DATA_DIR, COLLECTION_NAME
+from utils.cpg import generate_cpg_json
+from utils.embeddings import get_embedding_model
+from utils.llm import call_llm_with_retry, extract_json
+from utils.progress import ProgressTracker
+from utils.prompts import (
     PH_CPG,
     PH_CONTEXT,
     inject_placeholders,
     load_prompt_messages,
 )
-from framework.vectordb import get_collection
+from utils.vectordb import get_collection
 
 load_dotenv()
 
