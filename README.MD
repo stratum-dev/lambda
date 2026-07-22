@@ -19,7 +19,42 @@ conda env create -f environment.yml
 conda activate lambda
 ```
 
-Then copy the example environment file `.example.env` and rename it to `.env`, and edit it to provide your LLM settings, e.g., API Key, base URL.
+Copy the example environment file `.example.env` and rename it to `.env`, and edit it to provide your LLM settings, e.g., API Key, base URL.
+
+## Usage
+
+The dataset is loaded directly from HuggingFace ([codemetic/lambda](https://huggingface.co/datasets/codemetic/lambda)). Use `--subset` to choose a dataset config; the pipeline automatically loads the correct split (`knowledge` for building, `inference` for detection).
+
+### Build the knowledge base
+
+```bash
+python build.py --subset js-to-cpp [--reset-db] [--start N] [--limit N] [--workers N]
+```
+
+Description of flags:
+
++ `--subset NAME` Dataset subset to load. Available: `cpp-only`, `java-to-cpp`, `js-to-cpp`, `debug` (default: `js-to-cpp`).
++ `--reset-db` Drop and re-create the ChromaDB collection before processing.
++ `--start N` Resume from row index N (0-based).
++ `--limit N` Stop after N samples.
++ `--workers N` Max parallel LLM requests (default: `LLM_MAX_WORKERS` env or 4).
+
+Each knowledge entry is tagged with its `subset` in ChromaDB metadata, so different subsets' knowledge bases remain isolated. You can safely build multiple subsets into the same collection — queries filter by subset automatically.
+
+### Run vulnerability detection
+
+```bash
+python detect.py --subset js-to-cpp [--start N] [--limit N] [--workers N]
+```
+
+Description of flags:
+
++ `--subset NAME` Dataset subset to load (same options as above). Must match the subset used during `build.py` for correct retrieval.
++ `--start N` Resume from row index N (0-based).
++ `--limit N` Stop after N samples.
++ `--workers N` Max parallel LLM requests (default: `LLM_MAX_WORKERS` env or 4).
+
+Retrieval automatically filters ChromaDB by `where={"subset": subset}`, so only knowledge from the matching subset is used for RAG.
 
 ## License
 
