@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """Build the offline knowledge base.
 
-Reads vulnerability code samples (source + context), generates a CPG for each,
-sends it to an LLM with taint-analysis prompts to obtain structured knowledge,
-encodes the retrieval description into a vector, and stores the result in ChromaDB.
+Reads vulnerability code samples (source + context) from the HuggingFace dataset
+codemetic/lambda (knowledge split), generates a CPG for each, sends it to an LLM
+with taint-analysis prompts to obtain structured knowledge, encodes the retrieval
+description into a vector, and stores the result in ChromaDB.
 
 Usage:
-  python build_kb.py [--mini] [--reset-db] [--start N] [--limit N] [--workers N]
+  python build.py [--subset NAME] [--reset-db] [--start N] [--limit N] [--workers N]
 
 Flags:
-  --mini      Use knowledge.mini.parquet (debug subset) instead of the full dataset.
-  --reset-db  Drop and re-create the ChromaDB collection before starting.
-  --start N   Start processing at row index N (0-based, for resumption).
-  --limit N   Stop after processing N samples.
-  --workers N Max parallel LLM requests (default: LLM_MAX_WORKERS env or 4).
+  --subset NAME  Dataset subset/config to load (default: js-to-cpp).
+                 Available: cpp-only, java-to-cpp, js-to-cpp, debug.
+  --reset-db     Drop and re-create the ChromaDB collection before starting.
+  --start N      Start processing at row index N (0-based, for resumption).
+  --limit N      Stop after processing N samples.
+  --workers N    Max parallel LLM requests (default: LLM_MAX_WORKERS env or 4).
 """
 
 import argparse
@@ -24,9 +26,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import pandas as pd
+from datasets import load_dataset
 from dotenv import load_dotenv
 
-from utils.config import DATA_DIR, COLLECTION_NAME, LLM_MAX_WORKERS
+from utils.config import (
+    HF_DATASET_REPO,
+    HF_DATASET_SUBSET_DEFAULT,
+    COLLECTION_NAME,
+    LLM_MAX_WORKERS,
+)
 from utils.cpg import generate_cpg_json
 from utils.embeddings import get_embedding_model
 from utils.llm import call_llm_with_retry, extract_json
@@ -55,6 +63,7 @@ PROGRESS_FILE = Path("./build_kb_progress.t.json")
 def _process_one(
     idx: int,
     row,
+    subset: str,
     base_messages: list[dict],
     embedding_model,
     collection,
@@ -97,7 +106,7 @@ def _process_one(
         collection.add(
             embeddings=embeddings.tolist(),
             documents=[knowledge],
-            metadatas=[{"task": "js-to-cpp", "source_id": str(row_id)}],
+            metadatas=[{"subset": subset, "source_id": str(row_id)}],
             ids=[doc_id],
         )
 
@@ -121,7 +130,10 @@ def main() -> None:
         description="Build offline taint-analysis knowledge base"
     )
     parser.add_argument(
-        "--mini", action="store_true", help="Use knowledge.mini.parquet (debug subset)"
+        "--subset",
+        type=str,
+        default=HF_DATASET_SUBSET_DEFAULT,
+        help=f"Dataset subset/config to load (default: {HF_DATASET_SUBSET_DEFAULT})",
     )
     parser.add_argument(
         "--reset-db",
@@ -141,14 +153,17 @@ def main() -> None:
     args = parser.parse_args()
 
     # --- Load dataset ----------------------------------------------------------
-    parquet_name = "knowledge.mini.parquet" if args.mini else "knowledge.parquet"
-    parquet_path = DATA_DIR / parquet_name
-    if not parquet_path.exists():
-        print(f"ERROR: {parquet_path} not found. Run create_mini_dataset.py first?")
+    print(
+        f"Loading '{args.subset}' subset from {HF_DATASET_REPO} (knowledge split) ..."
+    )
+    try:
+        dataset = load_dataset(HF_DATASET_REPO, args.subset, split="knowledge")
+    except Exception as e:
+        print(f"ERROR: Failed to load dataset: {e}")
         sys.exit(1)
 
-    df = pd.read_parquet(parquet_path)
-    print(f"Loaded {len(df)} samples from {parquet_path}")
+    df = dataset.to_pandas()
+    print(f"Loaded {len(df)} samples, columns={list(df.columns)}")
     print(f"Max workers: {args.workers}")
 
     # --- Infrastructure --------------------------------------------------------
@@ -191,6 +206,7 @@ def main() -> None:
                 _process_one,
                 idx,
                 df.iloc[idx],
+                args.subset,
                 base_messages,
                 embedding_model,
                 collection,

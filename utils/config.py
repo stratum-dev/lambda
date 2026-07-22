@@ -28,7 +28,8 @@ MODEL = os.getenv("MODEL")
 # Paths
 # ---------------------------------------------------------------------------
 
-DATA_DIR = Path("./data/datasets/js-to-cpp")
+HF_DATASET_REPO = "codemetic/lambda"
+HF_DATASET_SUBSET_DEFAULT = "js-to-cpp"
 DB_PATH = Path("./db")
 PROMPT_DIR = Path("./prompts")
 

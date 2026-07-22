@@ -2,21 +2,23 @@
 """
 Run online vulnerability detection.
 
-For each code sample, generates a CPG, extracts taint-chain descriptions via
-LLM, queries the ChromaDB knowledge base for similar vulnerability patterns,
-and makes a final vulnerability determination via a second LLM call.
+For each code sample from the HuggingFace dataset codemetic/lambda (inference
+split), generates a CPG, extracts taint-chain descriptions via LLM, queries the
+ChromaDB knowledge base for similar vulnerability patterns, and makes a final
+vulnerability determination via a second LLM call.
 
 After processing, computes F1, MCC, Recall, and Precision against the ground-
 truth labels.
 
 Usage:
-  python detect.py [--mini] [--start N] [--limit N] [--workers N]
+  python detect.py [--subset NAME] [--start N] [--limit N] [--workers N]
 
 Flags:
-  --mini      Use inference.mini.parquet (debug subset) instead of the full dataset.
-  --start N   Start processing at row index N (0-based, for resumption).
-  --limit N   Stop after processing N samples.
-  --workers N Max parallel LLM requests (default: LLM_MAX_WORKERS env or 4).
+  --subset NAME  Dataset subset/config to load (default: js-to-cpp).
+                 Available: cpp-only, java-to-cpp, js-to-cpp, debug.
+  --start N      Start processing at row index N (0-based, for resumption).
+  --limit N      Stop after processing N samples.
+  --workers N    Max parallel LLM requests (default: LLM_MAX_WORKERS env or 4).
 """
 
 import argparse
@@ -28,9 +30,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import pandas as pd
+from datasets import load_dataset
 from dotenv import load_dotenv
 
-from utils.config import DATA_DIR, COLLECTION_NAME, LLM_MAX_WORKERS, TOP_K
+from utils.config import (
+    HF_DATASET_REPO,
+    HF_DATASET_SUBSET_DEFAULT,
+    COLLECTION_NAME,
+    LLM_MAX_WORKERS,
+    TOP_K,
+)
 from utils.cpg import generate_cpg_json
 from utils.embeddings import get_embedding_model
 from utils.llm import call_llm_with_retry, extract_json
@@ -62,6 +71,7 @@ RESULTS_FILE = Path("./detect_results.t.jsonl")
 def _process_one(
     idx: int,
     row,
+    subset: str,
     extract_messages: list[dict],
     detect_messages: list[dict],
     embedding_model,
@@ -86,7 +96,7 @@ def _process_one(
     extract_output = extract_json(response_text)
     descriptions: list[str] = extract_output.get("descriptions", [])
 
-    # --- Step 3: Encode → query ChromaDB ------------------------------------
+    # --- Step 3: Encode → query ChromaDB (filtered by subset) -----------------
     if not descriptions:
         all_knowledges: list[str] = []
     else:
@@ -99,6 +109,7 @@ def _process_one(
                 results = collection.query(
                     query_embeddings=[emb.tolist()],
                     n_results=TOP_K,
+                    where={"subset": subset},
                 )
             docs = results.get("documents", [[]])[0]
             for doc in docs:
@@ -153,7 +164,10 @@ def main() -> None:
         description="Online vulnerability detection with RAG"
     )
     parser.add_argument(
-        "--mini", action="store_true", help="Use inference.mini.parquet (debug subset)"
+        "--subset",
+        type=str,
+        default=HF_DATASET_SUBSET_DEFAULT,
+        help=f"Dataset subset/config to load (default: {HF_DATASET_SUBSET_DEFAULT})",
     )
     parser.add_argument(
         "--start", type=int, default=0, help="Start processing at row index (0-based)"
@@ -168,14 +182,17 @@ def main() -> None:
     args = parser.parse_args()
 
     # --- Load dataset ----------------------------------------------------------
-    parquet_name = "inference.mini.parquet" if args.mini else "inference.parquet"
-    parquet_path = DATA_DIR / parquet_name
-    if not parquet_path.exists():
-        print(f"ERROR: {parquet_path} not found. Run create_mini_dataset.py first?")
+    print(
+        f"Loading '{args.subset}' subset from {HF_DATASET_REPO} (inference split) ..."
+    )
+    try:
+        dataset = load_dataset(HF_DATASET_REPO, args.subset, split="inference")
+    except Exception as e:
+        print(f"ERROR: Failed to load dataset: {e}")
         sys.exit(1)
 
-    df = pd.read_parquet(parquet_path)
-    print(f"Loaded {len(df)} samples from {parquet_path}")
+    df = dataset.to_pandas()
+    print(f"Loaded {len(df)} samples, columns={list(df.columns)}")
     print(f"Label distribution:\n{df['label'].value_counts().to_string()}")
     print(f"Max workers: {args.workers}")
 
@@ -233,6 +250,7 @@ def main() -> None:
                     _process_one,
                     idx,
                     df.iloc[idx],
+                    args.subset,
                     extract_messages,
                     detect_messages,
                     embedding_model,
