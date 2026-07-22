@@ -21,14 +21,27 @@ conda activate lambda
 
 Copy the example environment file `.example.env` and rename it to `.env`, and edit it to provide your LLM settings, e.g., API Key, base URL.
 
+## Dataset
+
+The datasets used in this work are hosted on Huggingface Repository, and it will automatically download when start the programs, so you need not download the datasets manually.
+
+> **NOTICE:** If you are in China mainland, accessing to huggingface needs the network proxy, you should set the following environments manually before getting start:
+> ```bash
+> export HF_ENDPOINT=https://hf-mirror.com
+> ```
+
 ## Usage
 
-The dataset is loaded directly from HuggingFace ([codemetic/lambda](https://huggingface.co/datasets/codemetic/lambda)). Use `--subset` to choose a dataset config; the pipeline automatically loads the correct split (`knowledge` for building, `inference` for detection).
+The dataset is loaded directly from HuggingFace. Use `--subset` to choose a dataset config; the pipeline automatically loads the correct split (`knowledge` for building, `inference` for detection).
 
 ### Build the knowledge base
 
 ```bash
-python build.py --subset js-to-cpp [--reset-db] [--start N] [--limit N] [--workers N]
+python build.py --subset js-to-cpp  \ 
+                [--reset-db]        \ 
+                [--start N]         \
+                [--limit N]         \
+                [--workers N]
 ```
 
 Description of flags:
@@ -44,7 +57,10 @@ Each knowledge entry is tagged with its `subset` in ChromaDB metadata, so differ
 ### Run vulnerability detection
 
 ```bash
-python detect.py --subset js-to-cpp [--start N] [--limit N] [--workers N]
+python detect.py --subset js-to-cpp   \
+                 [--start N]          \ 
+                 [--limit N]          \ 
+                 [--workers N]
 ```
 
 Description of flags:
