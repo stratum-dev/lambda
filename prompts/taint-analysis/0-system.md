@@ -104,7 +104,7 @@ interface CodePropertyGraph {
 ```ts
 interface Output {
   knowledge: string; // 输出的漏洞模式知识
-  key: string; // 输出的检索语义描述
+  description: string; // 输出的检索语义描述
 }
 ```
 

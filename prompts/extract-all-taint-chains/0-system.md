@@ -79,7 +79,7 @@ interface CodePropertyGraph {
 
 ```ts
 interface Output {
-  semantic_description: string[]; // 所有 Sink 节点生成的检索语义描述
+  descriptions: string[]; // 所有 Sink 节点生成的检索语义描述
 }
 ```
 
