@@ -101,11 +101,11 @@ def _process_one(
 
     # --- Step 3: Encode → query ChromaDB (filtered by subset) -----------------
     if not descriptions:
-        all_knowledges: list[str] = []
+        all_knowledge: list[str] = []
     else:
         query_embeddings = embedding_model.encode(descriptions)
 
-        all_knowledges = []
+        all_knowledge = []
         seen: set[str] = set()
         for emb in query_embeddings:
             with lock:
@@ -118,12 +118,12 @@ def _process_one(
             for doc in docs:
                 if doc and doc not in seen:
                     seen.add(doc)
-                    all_knowledges.append(doc)
+                    all_knowledge.append(doc)
 
     # --- Step 4: Detect vulnerability via LLM --------------------------------
     knowledge_text = (
-        "\n\n---\n\n".join(all_knowledges)
-        if all_knowledges
+        "\n\n---\n\n".join(all_knowledge)
+        if all_knowledge
         else "（未检索到相关漏洞知识）"
     )
 
@@ -146,7 +146,7 @@ def _process_one(
         "vulnerable": pred_vulnerable,
         "inference": inference,
         "descriptions_extracted": descriptions,
-        "knowledges_retrieved": all_knowledges,
+        "knowledge_retrieved": all_knowledge,
     }
 
     # --- Step 6: Write result (serialised) -----------------------------------
@@ -294,7 +294,7 @@ def main() -> None:
                         f"Sample {idx} (id={record['id']}, label={true_label}) "
                         f"-> vulnerable={record['vulnerable']} {status} "
                         f"({len(record['descriptions_extracted'])} descriptions, "
-                        f"{len(record['knowledges_retrieved'])} knowledges)"
+                        f"{len(record['knowledge_retrieved'])} knowledge)"
                     )
                 except Exception:
                     with lock:
